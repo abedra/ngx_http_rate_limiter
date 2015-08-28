@@ -1,0 +1,25 @@
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lai
+*.lo
+*.Po
+*.Plo
+
+# Shared objects
+*.so
+*.so.*
+*.dylib
+
+dump.rdb
+build
+vendor
+/.bundle/
+cov-int
