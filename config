@@ -1,4 +1,4 @@
-CORE_LIBS="$CORE_LIBS -lhiredis"
+CORE_LIBS="$CORE_LIBS -lhiredis -lpq"
 ngx_addon_name=ngx_http_rate_limiter_module
 HTTP_MODULES="$HTTP_MODULES ngx_http_rate_limiter_module"
 NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_rate_limiter_module.c"

@@ -21,7 +21,7 @@ describe "Integration Specs" do
 
   describe "Rate Limiter" do
     it "returns a 429 after the rate limit is exceeded" do
-      10.times do
+      11.times do
         expect(Curl.get("http://127.0.0.1:8888").response_code).to eq(200)
       end
 

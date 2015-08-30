@@ -4,8 +4,18 @@
 #include <ngx_http.h>
 
 #include <hiredis/hiredis.h>
+#include <libpq-fe.h>
 
 #define NGX_HTTP_TOO_MANY_REQUESTS 429
+
+
+typedef struct {
+  char *service_name;
+  char *client_id;
+  int rate_limit;
+  int window_size;
+} rate_limit_configuration_t;
+
 
 typedef struct {
   ngx_str_t  host;
@@ -18,10 +28,59 @@ typedef struct {
   ngx_uint_t rate_limit;
   ngx_uint_t window_size;
   redis_t redis;
+  ngx_str_t database_name;
+  int num_clients;
+  rate_limit_configuration_t clients[];
 } rate_limiter_main_conf_t;
 
 
 ngx_module_t ngx_http_rate_limiter_module;
+
+
+static ngx_int_t
+load_configuration(ngx_http_request_t *r, rate_limiter_main_conf_t *main_conf)
+{
+  char       *connect_string;
+  char       query_string[256];
+  int        i;
+  PGconn     *conn;
+  PGresult   *res;
+  rate_limit_configuration_t config;
+
+  asprintf(&connect_string, "dbname=%s", main_conf->database_name.data);
+  conn = PQconnectdb(connect_string);
+
+  if (PQstatus(conn) == CONNECTION_BAD) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Could not connect to database: %s", PQerrorMessage(conn));
+    return NGX_DECLINED;
+  }
+
+  sprintf(query_string, "SELECT * FROM configuration");
+
+  res = PQexec(conn, query_string);
+
+  if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Query failed");
+    PQclear(res);
+    PQfinish(conn);
+    return NGX_DECLINED;
+  }
+
+  main_conf->num_clients = PQntuples(res);
+
+  for (i = 0; i < PQntuples(res); i++) {
+    config.service_name = PQgetvalue(res, i, 1);
+    config.client_id = PQgetvalue(res, i, 2);
+    config.rate_limit = strtol(PQgetvalue(res, i, 3), 0, 10);
+    config.window_size = strtol(PQgetvalue(res, i, 4), 0, 10);
+    main_conf->clients[i] = config;
+  }
+
+  PQclear(res);
+  PQfinish(conn);
+
+  return NGX_OK;
+}
 
 
 static void
@@ -106,11 +165,11 @@ increment(ngx_http_request_t *r, rate_limiter_main_conf_t *main_conf)
       return remaining;
     } else {
       freeReplyObject(reply);
-      return -1;
+      return NGX_DECLINED;
     }
   }
 
-  return NGX_OK;
+  return NGX_DECLINED;
 }
 
 
@@ -126,6 +185,7 @@ time_to_reset(ngx_http_request_t *r, rate_limiter_main_conf_t *main_conf)
   return NGX_DECLINED;
 }
 
+
 static ngx_int_t
 ngx_http_rate_limiter_handler(ngx_http_request_t *r)
 {
@@ -136,8 +196,15 @@ ngx_http_rate_limiter_handler(ngx_http_request_t *r)
   rate_limiter_main_conf_t *main_conf = ngx_http_get_module_main_conf(r, ngx_http_rate_limiter_module);
   main_conf->redis.connection = redisConnect((const char *)main_conf->redis.host.data, main_conf->redis.port);
 
-  ngx_int_t current = request_count(r, main_conf);
-  ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "current: %d", current);
+  // TODO: only do this once
+  load_configuration(r, main_conf);
+  int i;
+  for (i = 0; i < main_conf->num_clients; i++) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "%s (%s): %d, %d", main_conf->clients[i].client_id, main_conf->clients[i].service_name, main_conf->clients[i].rate_limit, main_conf->clients[i].window_size);
+  }
+
+  int current = (int)request_count(r, main_conf);
+  ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Count: %d", current);
 
   if (current > main_conf->rate_limit) {
     int remaining = time_to_reset(r, main_conf);
@@ -152,6 +219,7 @@ ngx_http_rate_limiter_handler(ngx_http_request_t *r)
 
   return NGX_OK;
 }
+
 
 static ngx_int_t
 ngx_http_rate_limiter_init(ngx_conf_t *cf)
@@ -205,6 +273,15 @@ static ngx_command_t ngx_http_rate_limiter_commands[] = {
     offsetof(rate_limiter_main_conf_t, redis.port),
     NULL
   },
+  {
+    ngx_string("rate_limiter_database_name"),
+    NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+    ngx_conf_set_str_slot,
+    NGX_HTTP_MAIN_CONF_OFFSET,
+    offsetof(rate_limiter_main_conf_t, database_name),
+    NULL
+  },
+
 
   ngx_null_command
 };
