@@ -4,7 +4,7 @@
 #include <ngx_http.h>
 
 #include <hiredis/hiredis.h>
-#include <libpq-fe.h>
+#include <postgresql/libpq-fe.h>
 
 #define NGX_HTTP_TOO_MANY_REQUESTS 429
 
@@ -47,7 +47,12 @@ load_configuration(ngx_http_request_t *r, rate_limiter_main_conf_t *main_conf)
   PGresult   *res;
   rate_limit_configuration_t config;
 
-  asprintf(&connect_string, "dbname=%s", main_conf->database_name.data);
+  int result = asprintf(&connect_string, "dbname=%s", main_conf->database_name.data);
+  if (result == -1) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Could not allocate connection string");
+    return NGX_DECLINED;
+  }
+
   conn = PQconnectdb(connect_string);
 
   if (PQstatus(conn) == CONNECTION_BAD) {
@@ -203,10 +208,10 @@ ngx_http_rate_limiter_handler(ngx_http_request_t *r)
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "%s (%s): %d, %d", main_conf->clients[i].client_id, main_conf->clients[i].service_name, main_conf->clients[i].rate_limit, main_conf->clients[i].window_size);
   }
 
-  int current = (int)request_count(r, main_conf);
+  ngx_int_t current = request_count(r, main_conf);
   ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Count: %d", current);
 
-  if (current > main_conf->rate_limit) {
+  if (current > (ngx_int_t)main_conf->rate_limit) {
     int remaining = time_to_reset(r, main_conf);
     set_rate_limit_reset_header(r, remaining);
     return NGX_HTTP_TOO_MANY_REQUESTS;
